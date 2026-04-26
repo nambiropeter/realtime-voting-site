@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Live Voting</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel">
+        <p class="eyebrow">Realtime Poll</p>
+        <h1 id="question">Loading question...</h1>
+        <p class="meta">
+          <span id="total-votes">0 votes</span>
+          <span class="dot">•</span>
+          <span id="online">0 online</span>
+        </p>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <div id="options" class="options" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="option-template">
+      <button class="option" type="button">
+        <span class="label"></span>
+        <span class="value"></span>
+        <span class="bar"></span>
+      </button>
+    </template>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

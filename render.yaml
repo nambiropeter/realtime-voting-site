@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: realtime-voting-site
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SECURE_COOKIE
+        value: "true"

@@ -13,7 +13,7 @@ app.disable("x-powered-by");
 const port = Number.parseInt(process.env.PORT || "3000", 10);
 const allowedOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS, port);
 const sessionSecret = process.env.SESSION_SECRET || "change-me-in-production";
-const secureCookie = process.env.SECURE_COOKIE === "true";
+const secureCookie = process.env.SECURE_COOKIE === "true" || process.env.RENDER === "true";
 const voteWindowMs = 10 * 1000;
 const voteLimit = 8;
 
@@ -48,16 +48,49 @@ const socketToVoter = new Map();
 const voteRateByVoter = new Map();
 
 function parseAllowedOrigins(rawOrigins, activePort) {
+  const toOrigin = (input) => {
+    if (!input || typeof input !== "string") {
+      return null;
+    }
+
+    const trimmed = input.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      return new URL(withScheme).origin;
+    } catch (_error) {
+      return null;
+    }
+  };
+
   if (!rawOrigins || !rawOrigins.trim()) {
-    return new Set([`http://localhost:${activePort}`, `http://127.0.0.1:${activePort}`]);
+    const defaults = new Set([`http://localhost:${activePort}`, `http://127.0.0.1:${activePort}`]);
+    const renderExternalUrl = toOrigin(process.env.RENDER_EXTERNAL_URL);
+    const renderExternalHost = toOrigin(process.env.RENDER_EXTERNAL_HOSTNAME);
+
+    if (renderExternalUrl) {
+      defaults.add(renderExternalUrl);
+    }
+
+    if (renderExternalHost) {
+      defaults.add(renderExternalHost);
+    }
+
+    return defaults;
   }
 
-  return new Set(
+  const configured = new Set(
     rawOrigins
       .split(",")
-      .map((origin) => origin.trim())
+      .map((origin) => toOrigin(origin))
       .filter(Boolean),
   );
+  configured.add(`http://localhost:${activePort}`);
+  configured.add(`http://127.0.0.1:${activePort}`);
+  return configured;
 }
 
 function parseCookieHeader(header = "") {

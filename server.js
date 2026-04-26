@@ -19,14 +19,7 @@ const voteLimit = 8;
 
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (isAllowedOrigin(origin, allowedOrigins)) {
-        callback(null, true);
-        return;
-      }
-
-      callback(new Error("Origin not allowed"));
-    },
+    origin: true,
     credentials: true,
     methods: ["GET", "POST"],
   },
@@ -47,24 +40,25 @@ const votesByVoter = new Map();
 const socketToVoter = new Map();
 const voteRateByVoter = new Map();
 
+function toOrigin(input) {
+  if (!input || typeof input !== "string") {
+    return null;
+  }
+
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    return new URL(withScheme).origin;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function parseAllowedOrigins(rawOrigins, activePort) {
-  const toOrigin = (input) => {
-    if (!input || typeof input !== "string") {
-      return null;
-    }
-
-    const trimmed = input.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    try {
-      return new URL(withScheme).origin;
-    } catch (_error) {
-      return null;
-    }
-  };
 
   if (!rawOrigins || !rawOrigins.trim()) {
     const defaults = new Set([`http://localhost:${activePort}`, `http://127.0.0.1:${activePort}`]);
@@ -177,7 +171,38 @@ function isAllowedOrigin(origin, allowList) {
     return true;
   }
 
-  return allowList.has(origin);
+  const normalizedOrigin = toOrigin(origin);
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  if (allowList.has(normalizedOrigin)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isSameHostOrigin(origin, hostHeader) {
+  const normalizedOrigin = toOrigin(origin);
+  if (!normalizedOrigin || !hostHeader) {
+    return false;
+  }
+
+  const host = hostHeader.trim();
+  if (!host) {
+    return false;
+  }
+
+  return normalizedOrigin === `https://${host}` || normalizedOrigin === `http://${host}`;
+}
+
+function isAllowedRequestOrigin(origin, allowList, hostHeader) {
+  if (!origin) {
+    return true;
+  }
+
+  return isAllowedOrigin(origin, allowList) || isSameHostOrigin(origin, hostHeader);
 }
 
 function isVoteRateLimited(voterId) {
@@ -252,7 +277,7 @@ function broadcastState() {
 }
 
 app.use((req, res, next) => {
-  if (!isAllowedOrigin(req.headers.origin, allowedOrigins)) {
+  if (!isAllowedRequestOrigin(req.headers.origin, allowedOrigins, req.headers.host)) {
     res.status(403).send("Origin not allowed");
     return;
   }
@@ -303,6 +328,11 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, "public")));
 
 io.use((socket, next) => {
+  if (!isAllowedRequestOrigin(socket.handshake.headers.origin, allowedOrigins, socket.handshake.headers.host)) {
+    next(new Error("Origin not allowed"));
+    return;
+  }
+
   const session = getOrCreateVoterIdFromCookies(socket.handshake.headers.cookie || "");
   if (session.isNew) {
     next(new Error("Unauthorized"));

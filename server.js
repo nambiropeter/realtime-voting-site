@@ -26,13 +26,13 @@ const io = new Server(server, {
 });
 
 const poll = {
-  id: "launch-priority",
-  question: "What should we prioritize this week?",
+  id: "presidential-race-2027",
+  question: "If the 2027 presidential election were held today, who would you support?",
   options: [
-    { id: "new-feature", label: "Build a new feature", votes: 0 },
-    { id: "bug-fixes", label: "Fix top bugs", votes: 0 },
-    { id: "performance", label: "Performance improvements", votes: 0 },
-    { id: "ui-refresh", label: "UI refresh", votes: 0 },
+    { id: "candidate-a", label: "Candidate A", votes: 0 },
+    { id: "candidate-b", label: "Candidate B", votes: 0 },
+    { id: "candidate-c", label: "Candidate C", votes: 0 },
+    { id: "undecided", label: "Undecided", votes: 0 },
   ],
 };
 

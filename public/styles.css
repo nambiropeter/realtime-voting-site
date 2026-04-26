@@ -52,8 +52,15 @@ h1 {
   line-height: 1.2;
 }
 
+.note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .meta {
-  margin: 12px 0 24px;
+  margin: 12px 0 20px;
   color: var(--muted);
   display: flex;
   flex-wrap: wrap;

@@ -12,3 +12,5 @@ services:
         generateValue: true
       - key: SECURE_COOKIE
         value: "true"
+      - key: DATABASE_URL
+        sync: false

@@ -4,6 +4,7 @@ const express = require("express");
 const http = require("http");
 const helmet = require("helmet");
 const { rateLimit } = require("express-rate-limit");
+const { Pool } = require("pg");
 const { Server } = require("socket.io");
 
 const app = express();
@@ -16,6 +17,9 @@ const sessionSecret = process.env.SESSION_SECRET || "change-me-in-production";
 const secureCookie = process.env.SECURE_COOKIE === "true" || process.env.RENDER === "true";
 const voteWindowMs = 10 * 1000;
 const voteLimit = 8;
+const databaseUrl = process.env.DATABASE_URL || "";
+const useDatabase = Boolean(databaseUrl);
+const pool = useDatabase ? createDatabasePool(databaseUrl) : null;
 
 const io = new Server(server, {
   cors: {
@@ -39,6 +43,7 @@ const poll = {
 const votesByVoter = new Map();
 const socketToVoter = new Map();
 const voteRateByVoter = new Map();
+let voteWriteQueue = Promise.resolve();
 
 function toOrigin(input) {
   if (!input || typeof input !== "string") {
@@ -85,6 +90,23 @@ function parseAllowedOrigins(rawOrigins, activePort) {
   configured.add(`http://localhost:${activePort}`);
   configured.add(`http://127.0.0.1:${activePort}`);
   return configured;
+}
+
+function createDatabasePool(connectionString) {
+  const sslOverride = process.env.DATABASE_SSL;
+  if (sslOverride === "true") {
+    return new Pool({ connectionString, ssl: { rejectUnauthorized: false } });
+  }
+
+  if (sslOverride === "false") {
+    return new Pool({ connectionString });
+  }
+
+  if (/sslmode=require/i.test(connectionString)) {
+    return new Pool({ connectionString, ssl: { rejectUnauthorized: false } });
+  }
+
+  return new Pool({ connectionString });
 }
 
 function parseCookieHeader(header = "") {
@@ -235,21 +257,14 @@ function getOptionById(optionId) {
   return poll.options.find((option) => option.id === optionId);
 }
 
-function snapshot() {
-  const totalVotes = poll.options.reduce((sum, option) => sum + option.votes, 0);
-  return {
-    pollId: poll.id,
-    question: poll.question,
-    options: poll.options.map((option) => ({
-      id: option.id,
-      label: option.label,
-      votes: option.votes,
-    })),
-    totalVotes,
-  };
+function resetInMemoryVotes() {
+  votesByVoter.clear();
+  for (const option of poll.options) {
+    option.votes = 0;
+  }
 }
 
-function applyVote(voterId, optionId) {
+function setVoteInMemory(voterId, optionId) {
   const nextOption = getOptionById(optionId);
   if (!nextOption) {
     return false;
@@ -270,6 +285,87 @@ function applyVote(voterId, optionId) {
   nextOption.votes += 1;
   votesByVoter.set(voterId, optionId);
   return true;
+}
+
+async function initializePersistence() {
+  if (!pool) {
+    console.warn("DATABASE_URL not set. Running with in-memory votes only.");
+    return;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      poll_id TEXT NOT NULL,
+      voter_id TEXT NOT NULL,
+      option_id TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (poll_id, voter_id)
+    )
+  `);
+
+  const result = await pool.query(
+    `SELECT voter_id, option_id FROM poll_votes WHERE poll_id = $1`,
+    [poll.id],
+  );
+
+  resetInMemoryVotes();
+  for (const row of result.rows) {
+    setVoteInMemory(row.voter_id, row.option_id);
+  }
+
+  console.log(`Loaded ${result.rowCount} persisted votes from Postgres.`);
+}
+
+async function persistVote(voterId, optionId) {
+  if (!pool) {
+    return;
+  }
+
+  await pool.query(
+    `
+    INSERT INTO poll_votes (poll_id, voter_id, option_id, updated_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (poll_id, voter_id)
+    DO UPDATE SET option_id = EXCLUDED.option_id, updated_at = NOW()
+    `,
+    [poll.id, voterId, optionId],
+  );
+}
+
+function enqueueVoteOperation(operation) {
+  const run = voteWriteQueue.then(operation, operation);
+  voteWriteQueue = run.catch(() => {});
+  return run;
+}
+
+function snapshot() {
+  const totalVotes = poll.options.reduce((sum, option) => sum + option.votes, 0);
+  return {
+    pollId: poll.id,
+    question: poll.question,
+    options: poll.options.map((option) => ({
+      id: option.id,
+      label: option.label,
+      votes: option.votes,
+    })),
+    totalVotes,
+  };
+}
+
+async function applyVote(voterId, optionId) {
+  const optionExists = Boolean(getOptionById(optionId));
+  if (!optionExists) {
+    return { ok: false, code: "invalid_option" };
+  }
+
+  const previousOptionId = votesByVoter.get(voterId);
+  if (previousOptionId === optionId) {
+    return { ok: true, unchanged: true };
+  }
+
+  await persistVote(voterId, optionId);
+  setVoteInMemory(voterId, optionId);
+  return { ok: true, unchanged: false };
 }
 
 function broadcastState() {
@@ -354,7 +450,7 @@ io.on("connection", (socket) => {
     socket.emit("poll:your-vote", { optionId: currentChoice });
   }
 
-  socket.on("poll:vote", (payload) => {
+  socket.on("poll:vote", async (payload) => {
     const optionId = payload && typeof payload.optionId === "string" ? payload.optionId.trim() : "";
     if (!optionId || optionId.length > 64) {
       return;
@@ -365,13 +461,23 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const voteAccepted = applyVote(voterId, optionId);
-    if (!voteAccepted) {
+    let voteResult;
+    try {
+      voteResult = await enqueueVoteOperation(() => applyVote(voterId, optionId));
+    } catch (error) {
+      console.error("Failed to persist vote:", error);
+      socket.emit("poll:error", { message: "Vote could not be saved. Please try again." });
+      return;
+    }
+
+    if (!voteResult.ok) {
       return;
     }
 
     socket.emit("poll:your-vote", { optionId });
-    broadcastState();
+    if (!voteResult.unchanged) {
+      broadcastState();
+    }
   });
 
   socket.on("disconnect", () => {
@@ -380,8 +486,18 @@ io.on("connection", (socket) => {
   });
 });
 
-setInterval(scrubStaleRateLimitEntries, voteWindowMs).unref();
+async function start() {
+  try {
+    await initializePersistence();
+    setInterval(scrubStaleRateLimitEntries, voteWindowMs).unref();
 
-server.listen(port, () => {
-  console.log(`Real-time voting site running at http://localhost:${port}`);
-});
+    server.listen(port, () => {
+      console.log(`Real-time voting site running at http://localhost:${port}`);
+    });
+  } catch (error) {
+    console.error("Startup failed:", error);
+    process.exit(1);
+  }
+}
+
+start();

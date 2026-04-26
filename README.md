@@ -24,6 +24,19 @@ Open `http://localhost:3000` in multiple browser tabs/devices and vote. Results 
 - `SESSION_SECRET`: secret used to sign voter session cookies (set this in production).
 - `ALLOWED_ORIGINS`: comma-separated origins (example: `https://vote.example.com`).
 - `SECURE_COOKIE=true`: mark session cookie as secure (use with HTTPS).
+- `DATABASE_URL`: PostgreSQL connection string for persistent vote storage.
+- `DATABASE_SSL=true|false`: optional override for Postgres SSL behavior.
+
+## Persistent storage on Render
+
+Votes are persisted when `DATABASE_URL` is set. Without it, the app falls back to in-memory storage.
+
+1. In Render, create a **Postgres** database.
+2. Open your web service `realtime-voting-site` > **Environment**.
+3. Add `DATABASE_URL` using your Postgres connection string.
+4. Redeploy the web service.
+
+After this, votes survive restarts and new deploys.
 
 ## Beginner-friendly deploy (Render)
 
